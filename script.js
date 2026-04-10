@@ -286,34 +286,33 @@ async function searchDestination() {
     btn.innerHTML = `<svg class="loading-spin" viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>`;
 
     try {
-        // 1. 先检查是不是已经搜索过/本地已经有了
         const existingData = [...travelData, ...customData].find(d => d.city === city || d.id === city);
         if (existingData) {
             openGuide(existingData);
             return;
         }
 
-        // 2. 准备发送给 AI 的提示词
+        // 优化：在提示词中严厉警告 AI 井号必须放进双引号里！
         const prompt = `
-            请为"${city}"这个地方写一份旅游攻略。
+            请为"${city}"写一份旅游攻略。
             角色设定：你是一位热爱生活、文笔温柔的旅行博主。
             要求：
             1. 判断该地点最符合以下哪种类型：['sea', 'nature', 'city', 'ancient'] (只能选一个)。
-            2. 严格返回纯 JSON 格式，不要包含任何前言后语。
+            2. 输出必须是合法的 JSON 对象，不要包含 Markdown 代码块。
+            3. tags 数组中的井号 # 必须写在双引号内部！例如: "#世界文化遗产" ，绝对不能写成 #"世界文化遗产"！
             
-            必须严格遵循以下JSON结构：
+            结构如下：
             {
                 "id": "${city}",
                 "city": "${city}",
                 "type": "类型",
                 "title": "标题",
-                "tags": ["#标签1"],
+                "tags": ["#标签1", "#标签2"],
                 "content": ["段落1", "段落2"],
                 "tips": ["贴士1", "贴士2"]
             }
         `;
 
-        // 3. 请求 DeepSeek API
         const response = await fetch(API_URL, {
             method: 'POST',
             headers: {
@@ -323,28 +322,29 @@ async function searchDestination() {
             body: JSON.stringify({
                 model: MODEL_NAME,
                 messages: [{ role: "user", content: prompt }],
-                temperature: 0.8
+                temperature: 0.8,
+                // 开启 DeepSeek 的 JSON 强制输出模式
+                response_format: { type: "json_object" }
             })
         });
 
-        // 如果接口返回错误状态码（如 402余额不足、503服务器繁忙）
         if (!response.ok) {
             const errorData = await response.json();
-            throw new Error(`API 报错啦: ${errorData.error?.message || response.statusText}`);
+            throw new Error(`API 报错: ${errorData.error?.message || response.statusText}`);
         }
 
         const data = await response.json();
-
-        // 4. 智能提取 AI 返回的内容中的 JSON 部分（过滤掉废话）
         let aiContent = data.choices[0].message.content;
-        const jsonMatch = aiContent.match(/\{[\s\S]*\}/); // 正则表达式：只抓取大括号 {} 及其里面的内容
 
-        if (!jsonMatch) {
-            throw new Error("AI 没有按要求返回数据，请重试！");
-        }
+        // 提取大括号内容
+        const jsonMatch = aiContent.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("AI 返回数据异常！");
 
-        // 5. 解析并展示数据
-        const guideData = JSON.parse(jsonMatch[0]);
+        // 终极杀招：正则替换，把 AI 写错的 #"标签" 强制改回 "#标签"
+        let cleanJson = jsonMatch[0].replace(/#"/g, '"#');
+
+        // 解析数据
+        const guideData = JSON.parse(cleanJson);
         if (!guideData.id) guideData.id = city;
         guideData.image = getRandomImageByType(guideData.type);
 
@@ -352,9 +352,8 @@ async function searchDestination() {
 
     } catch (error) {
         console.error("AI Error:", error);
-        alert("连接星辰失败：\n" + error.message + "\n\n(提示: 按 F12 打开控制台可查看具体原因)");
+        alert("获取攻略失败：\n" + error.message);
     } finally {
-        // 恢复搜索框状态
         input.disabled = false;
         input.value = "";
         input.placeholder = originalPlaceholder;
